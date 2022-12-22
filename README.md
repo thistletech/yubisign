@@ -159,7 +159,7 @@ variable `THISTLE_PIV` to override the path of the `pivit` binary.
 
 ```bash
 # thistle-bin/yubisign -h
-Usage: ./thistle-bin/yubisign <subcommand> [options]
+Usage: thistle-bin/yubisign <subcommand> [options]
 
 Subcommands:
   keygen  Generate new YubiKey keypair for signing

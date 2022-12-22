@@ -1,6 +1,6 @@
 # YubiKey File Signing
 
-[![Shellcheck](https://github.com/thistletech/yubisign/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/thistletech/yubisign/actions/workflows/shellcheck.yml/badge.svg)
+[![Shellcheck](https://github.com/thistletech/yubisign/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/thistletech/yubisign/actions/workflows/shellcheck.yml)
 [![Markdown Lint](https://github.com/thistletech/yubisign/actions/workflows/markdownlint.yml/badge.svg)](https://github.com/thistletech/yubisign/actions/workflows/markdownlint.yml)
 
 `yubisign` is a wrapper around [pivit](https://github.com/cashapp/pivit), aiming

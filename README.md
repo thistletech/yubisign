@@ -1,6 +1,6 @@
 # YubiKey File Signing
 
-[![Shellcheck](https://github.com/thistletech/yubisign/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/thistletech/yubisign/actions/workflows/shellcheck.yml/badge.svg)
+[![Shellcheck](https://github.com/thistletech/yubisign/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/thistletech/yubisign/actions/workflows/shellcheck.yml)
 [![Markdown Lint](https://github.com/thistletech/yubisign/actions/workflows/markdownlint.yml/badge.svg)](https://github.com/thistletech/yubisign/actions/workflows/markdownlint.yml)
 
 `yubisign` is a wrapper around [pivit](https://github.com/cashapp/pivit), aiming
@@ -159,7 +159,7 @@ variable `THISTLE_PIV` to override the path of the `pivit` binary.
 
 ```bash
 # thistle-bin/yubisign -h
-Usage: ./thistle-bin/yubisign <subcommand> [options]
+Usage: thistle-bin/yubisign <subcommand> [options]
 
 Subcommands:
   keygen  Generate new YubiKey keypair for signing

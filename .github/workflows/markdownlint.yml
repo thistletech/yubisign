@@ -1,0 +1,38 @@
+# markdownlint: https://github.com/markdownlint/markdownlint
+name: "markdownlint"
+
+on:
+  push:
+    branches:
+    - 'main'
+  pull_request:
+    branches:
+    - 'main'
+
+jobs:
+  mdl:
+    name: "markdownlint"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@v3
+      - name: "Install Ruby"
+        # v1.117.0
+        uses: ruby/setup-ruby@3068fa83f9cbd7ae106cac45483635a2f3a195c9
+        with:
+          ruby-version: '3.0'
+          bundler-cache: true
+      - name: "Install mdl"
+        run: gem install mdl
+      - name: "Run mdl"
+        run: |
+          set -euxo pipefail
+          cd ${{ github.workspace }}/
+          mdl --version
+          for f in $(find . -path ./.git -prune -o -type f -name "*.md" -print); do
+            mdl "$f"
+          done

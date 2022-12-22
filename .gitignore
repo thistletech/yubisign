@@ -1,0 +1,5 @@
+*~
+.vscode/
+*.bak
+.DS_Store
+.certs/

@@ -1,0 +1,421 @@
+#!/usr/bin/env bash
+#
+# File signing utility based on `pivit`
+#
+# Environment variables:
+#  THISTLE_PIVPIN: if set, PIN value of YubiKey's PIV applet. Must be 6-8 decimal
+#    digits.
+#    Default is a randomly generated 8-digit value.
+#  THISTLE_PIVIT: if set, path to an alternate pivit binary to use.
+#  THISTLE_OPENSSL: if set, path to an alternate openssl binary to use.
+#  THISTLE_CERTS_OUTDIR: if set, directory containing YubiKey device attestation
+#    certificate and generated key certificate files from keygen.
+#    Default is ${PWD}/.certs
+#
+
+set -euo pipefail
+
+# Foreground color coding
+_RST="\033[0m" # resets color and format
+readonly _RST
+_RED="\033[0;31m"
+readonly _RED
+_GREEN="\033[0;32m"
+readonly _GREEN
+_BLUE="\033[0;34m"
+readonly _BLUE
+
+# Allow THISTLE_PIVIT environment variable to override pivit in path
+declare -r pivit="${THISTLE_PIVIT:-$(command -v pivit)}"
+
+# Allow THISTLE_OPENSSL environment variable to override openssl in path
+declare -r openssl="${THISTLE_OPENSSL:-$(command -v openssl)}"
+
+# Allow THISTLE_CERTS_OUTDIR environment variable to override output directory
+# containing certificates from keygen
+declare -r certs_outdir="${THISTLE_CERTS_OUTDIR:-./.certs}"
+
+################################
+# Helper functions
+################################
+err() {
+  echo -e "${_RED}$*${_RST}" >&2
+  exit 1
+}
+
+print_red() {
+  echo -e "${_RED}$*${_RST}"
+}
+
+print_green() {
+  echo -e "${_GREEN}$*${_RST}"
+}
+
+print_blue() {
+  echo -e "${_BLUE}$*${_RST}"
+}
+
+# Generate a random 8-digit numeric PIN
+rand_pin() {
+  local pin=""
+  for _ in $(seq 8); do
+    c_hex=$(head -c 1 /dev/urandom | xxd -p)
+    c_dec=$(( 16#${c_hex} % 10 ))
+    pin="${pin}${c_dec}"
+  done
+
+  echo -n "${pin}"
+}
+
+################################
+# Self tests
+################################
+self_test_common() {
+  # Check openssl
+  [[ -n ${openssl} ]] || \
+    err "cannot find openssl. Please install openssl first"
+
+  # Check can call openssl
+  ${openssl} version &>/dev/null || \
+    err "cannot call openssl. Please install openssl first"
+
+  # Check pivit
+  [[ -n ${pivit} ]] || \
+    err "cannot find pivit. Please install pivit first"
+
+  # Check base64
+  command -v base64 &>/dev/null || \
+    err "cannot find command base64. Please install coreutils first"
+
+  local prt_output=""
+  set +e
+  ${pivit} --print &>/dev/null || prt_output="$(${pivit} --print 2>&1)"
+  set -e
+
+  if [[ "${prt_output:0:20}" == "enumerate smart card" ]]; then
+    err "pcsclite not found." \
+      "Please install libpcsclite-dev and pcscd first, and ensure pcscd is running"
+  fi
+}
+
+self_test_sign() {
+  self_test_common
+
+  local prt_output=""
+  set +e
+  ${pivit} --print &>/dev/null || prt_output="$(${pivit} --print 2>&1)"
+  set -e
+
+  if [[ "${prt_output:0:16}" == "no yubikey found" ]]; then
+    err "Certificate not found." \
+      "Please ensure your YubiKey is inserted, and your pivit key has been generated"
+  fi
+}
+
+confirm_keygen() {
+  read -p "$(print_red "This operation will reset your release signing key. OK to proceed (N/y)? ")" \
+    -n 1 -r USER_RESPONSE
+  if [[ ! ${USER_RESPONSE} =~ ^[Yy]$ ]]; then
+    exit 1
+  else
+    echo >&2
+    read -p "$(print_blue "Are you sure (N/y)? ")" -n 1 -r USER_RESPONSE
+    echo >&2
+    if [[ ! ${USER_RESPONSE} =~ ^[Yy]$ ]]; then
+      exit 1
+    fi
+  fi
+
+  read -p "$(print_blue "Make sure your YubiKey is inserted. Proceed (N/y)? ")" \
+    -n 1 -r USER_RESPONSE
+  if [[ ! ${USER_RESPONSE} =~ ^[Yy]$ ]]; then
+    exit 1
+  fi
+  echo >&2
+}
+
+################################
+# Subcommands
+################################
+
+####################################################################
+# Generate a new pivit key pair in YubiKey Slot 9e
+#
+# If self checks pass, resets the PIV card authentication slot (9e)
+# and generates a new key pair to store in it. Because this function
+# invalidates the existing key in PIV Slot 9e, a user needs to 
+# confirm 3 times before the action is taken. If keygen succeeds, the
+# leaf certificate for the private signing key is output to stdout
+#
+# Globals:
+#  THISTLE_PIVPIN
+#  THISTLE_PIV
+#  THISTLE_OPENSSL
+#  THISTLE_CERTS_OUTDIR
+#
+# Arguments: None
+#
+# Returns:
+#  0 if key generation succeeds, non-zero otherwise
+####################################################################
+keygen() {
+  local is_debugging=false
+
+  while getopts ":hv" opt; do
+    case ${opt} in
+      h )
+        usage_keygen
+        exit 0 ;;
+      v )
+        is_debugging=true ;;
+      \? )
+        echo "Invalid optoin: $OPTARG"
+        exit 1 ;;
+      esac
+  done
+
+  shift $((OPTIND - 1))
+
+  if "$is_debugging"; then
+    set -x
+  fi
+
+  self_test_common
+  confirm_keygen
+
+  local pivpin
+  pivpin="${THISTLE_PIVPIN:-"$(rand_pin)"}"
+
+  local attestation_cert
+  attestation_cert="${certs_outdir}/piv_attestation.pem"
+  local attestation_cert_der
+  attestation_cert_der="${certs_outdir}/piv_attestation.der"
+
+  local leaf_cert
+  leaf_cert="${certs_outdir}/leaf.pem"
+  local leaf_cert_der
+  leaf_cert_der="${certs_outdir}/leaf.der"
+
+  mkdir -p "${certs_outdir}"
+
+  echo -n "Generating a new key pair. " >&2
+  print_blue "Touch your YubiKey if it blinks." >&2
+  echo "$pivpin" | ${pivit} --reset
+  pivit_out=$(echo "$pivpin" | ${pivit} --generate)
+  # Device PIV Attestation cert
+  echo "$pivit_out" | \
+    awk '/^-----BEGIN CERTIFICATE-----/,/^-----END CERTIFICATE-----/{if(++x==1)n++;if(n==1)print;if(/^-----END CERTIFICATE-----/)x=0}' \
+    > "${attestation_cert}"
+  ${openssl} x509 -in "${attestation_cert}" -inform PEM -outform DER -out "${attestation_cert_der}"
+  # Device leaf key cert
+  echo "$pivit_out" | \
+    awk '/^-----BEGIN CERTIFICATE-----/,/^-----END CERTIFICATE-----/{if(++x==1)n++;if(n==2)print;if(/^-----END CERTIFICATE-----/)x=0}' \
+    > "${leaf_cert}"
+  ${openssl} x509 -in "${leaf_cert}" -inform PEM -outform DER -out "${leaf_cert_der}"
+  print_green "Device PIV attestation cert has been created in ${attestation_cert} and ${attestation_cert_der}" >&2
+  print_green "Device leaf key cert has been created in ${leaf_cert} and ${leaf_cert_der}" >&2
+  # Output leaf cert PEM to stdout
+  cat "${leaf_cert}"
+}
+
+####################################################################
+# Sign a file using pivit key in YubiKey Slot 9e
+#
+# If self checks pass, sign a file in path PAYLOAD_FILE using
+# YubiKey. If signing succeeds, the signature is output to stdout
+#
+# Globals:
+#  THISTLE_PIV
+#  THISTLE_OPENSSL
+#
+# Arguments:
+#  Required payload file path, which is the file to sign
+#
+# Returns:
+#  0 if signing succeeds, non-zero otherwise
+####################################################################
+sign() {
+  local is_debugging=false
+  local payload_file=""
+  local signer_id=""
+
+  while getopts ":hv" opt; do
+    case ${opt} in
+      h )
+        usage_sign
+        exit 0 ;;
+      v )
+        is_debugging=true ;;
+      \? )
+        echo "Invalid optoin: $OPTARG"
+        exit 1 ;;
+      esac
+  done
+
+  shift $((OPTIND - 1))
+
+  if [[ "$#" -lt 1 ]]; then
+    print_red "missing PAYLOAD_FILE"
+    usage_sign
+    exit 1
+  fi
+
+  if "$is_debugging"; then
+    set -x
+  fi
+
+  self_test_sign
+
+  signer_id=$(${pivit} --print | head -n 1)
+  payload_file="$1"
+
+  echo -n "Signing ${payload_file} with YubiKey. " >&2
+  print_blue "Touch your YubiKey if it blinks." >&2
+  ${pivit} -absu "${signer_id}" "${payload_file}" | sed 's/SIGNED MESSAGE/PKCS7/g'
+}
+
+####################################################################
+# Verify pivit signature of payload with a certificate using openssl
+#
+# If self checks pass, verify a signature file in path SIGNATURE_FILE
+# for a payload file in path PAYLOAD_FILE against a certificate file
+# in path CERTIFICATE_FILE using openssl.
+# Both SIGNATURE_FILE AND CERTIFICATE_FILE are base64-encoded, DER
+# formatted data as output by sign() and keygen()
+#
+# Globals:
+#  THISTLE_OPENSSL
+#
+# Arguments:
+#  Required payload, signature and certificate file paths
+#
+# Returns:
+#  0 if signature verification succeeds, non-zero otherwise
+####################################################################
+verify() {
+  local is_debugging=false
+  local payload_file=""
+  local signature_file=""
+  local certificate_file=""
+  local sig_der_tmp=""
+  sig_der_tmp="$(mktemp)"
+  local cert_der_tmp=""
+  cert_der_tmp="$(mktemp)"
+  local cert_pem_tmp=""
+  cert_pem_tmp="$(mktemp)"
+
+  while getopts ":hv" opt; do
+    case ${opt} in
+      h )
+        usage_verify
+        exit 0 ;;
+      v )
+        is_debugging=true ;;
+      \? )
+        echo "Invalid optoin: $OPTARG"
+        exit 1 ;;
+      esac
+  done
+
+  shift $((OPTIND - 1))
+
+  if [[ "$#" -ne 3 ]]; then
+    print_red "missing input"
+    usage_verify
+    exit 1
+  fi
+
+  if "$is_debugging"; then
+    set -x
+  fi
+
+  self_test_common
+
+  payload_file="$1"
+  signature_file="$2"
+  certificate_file="$3"
+
+  echo "Verifying signature ${signature_file} with certificate ${certificate_file} for payload ${payload_file}." >&2
+  base64 -d "${signature_file}" > "${sig_der_tmp}"
+  base64 -d "${certificate_file}" > "${cert_der_tmp}"
+  ${openssl} x509 -in "${cert_der_tmp}" -inform DER -outform PEM > "${cert_pem_tmp}"
+  ${openssl} smime -verify -binary -content "${payload_file}" \
+    -in "${sig_der_tmp}" -inform DER \
+    -certfile "${cert_pem_tmp}" -nointern \
+    -CAfile "${cert_pem_tmp}" -partial_chain 1>/dev/null
+}
+
+usage() {
+  echo "Usage: $0 <subcommand> [options]"
+  echo
+  echo "Subcommands:"
+  echo "  keygen  Generate new YubiKey keypair for signing"
+  echo "  sign    Sign a file with YubiKey"
+  echo "  verify  Verify a YubiKey signature with a certificate"
+  echo
+  echo "For subcommand usage, run:"
+  echo "  $0 <subcommand> -h|--help"
+  echo
+}
+
+usage_keygen() {
+  echo "Usage:"
+  echo "  $0 ${FUNCNAME[1]} -h    Display this help message"
+  echo "  $0 ${FUNCNAME[1]} [-v]"
+  echo "           Generate a new key pair in YubiKey for release signing."
+  echo "           When -v is present, output debugging information."
+}
+
+usage_sign() {
+  echo "Usage:"
+  echo "  $0 ${FUNCNAME[1]} -h    Display this help message"
+  echo "  $0 ${FUNCNAME[1]} [-v] PAYLOAD_FILE"
+  echo "           Sign PAYLOAD_FILE with YubiKey."
+  echo "           When -v is present, output debugging information."
+}
+
+usage_verify() {
+  echo "Usage:"
+  echo "  $0 ${FUNCNAME[1]} -h    Display this help message"
+  echo "  $0 ${FUNCNAME[1]} [-v] PAYLOAD_FILE SIGNATURE_FILE CERTIFICATE_FILE"
+  echo "           Verify SIGNATURE_FILE for PAYLOAD_FILE using CERTIFICATE_FIlE, using openssl."
+  echo "           SIGNATURE_FILE AND CERTIFICATE_FILE are base64-encoded DER formatted data."
+  echo "           When -v is present, output debugging information."
+}
+
+################################
+# CLI entrypoint
+################################
+
+cli() {
+  local subcommand
+  if [[ "$#" == 0 ]]; then
+    subcommand=""
+  else
+    subcommand=${1}
+  fi
+
+  case ${subcommand} in
+    "" | "-h" | "--help" )
+      usage
+      exit 0 ;;
+    "keygen" )
+      shift
+      keygen "$@"
+      ;;
+    "sign" )
+      shift
+      sign "$@"
+      ;;
+    "verify" )
+      shift
+      verify "$@"
+      ;;
+    * )
+      err "Unrecoganized subcommand: ${subcommand}"
+      ;;
+  esac
+}
+
+# Let's go
+cli "$@"

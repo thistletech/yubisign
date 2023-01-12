@@ -1,5 +1,3 @@
 # Security
 
-We encourage reporting security issues found in this repository.
-
-Vulnerabilities can be reported to <security@thistle.tech>.
+Please report security issues or vulnerabilities to <security@thistle.tech>.
